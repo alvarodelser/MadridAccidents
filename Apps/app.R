@@ -26,7 +26,10 @@ library(htmlwidgets)
 #DATA PREPROCESSING
 
 accident_data <- read.csv("C:\\Users\\afont\\Documents\\RStudio WD\\Shiny Tutorial Assignment -  Group 12\\Assignment\\2023_Accidentalidad.csv", sep=";")
-
+street_data=read.csv("C:\\Users\\afont\\Documents\\RStudio WD\\Shiny Tutorial Assignment -  Group 12\\Assignment\\calles_tranquilas.csv", sep=",")
+street_data<-na.omit(street_data)
+ciclostreet_data=read.csv("C:\\Users\\afont\\Documents\\RStudio WD\\Shiny Tutorial Assignment -  Group 12\\Assignment\\ciclocarriles.csv", sep=",")
+ciclostreet_data<-na.omit(ciclostreet_data)
 # Reclassify 'rango_edad' into simplified age categories
 accident_data <- accident_data %>%
   mutate(simplified_age_range = case_when(
@@ -49,6 +52,17 @@ accident_data <- accident_data %>%
                                        "NULL",
                                        estado_meteorológico))
 
+#Modify hour column
+# Function to extract hour from "hora"
+extract_hour <- function(time_str) {
+  parts <- strsplit(time_str, ":")[[1]]
+  as.numeric(parts[1])
+}
+
+# Apply the function to create a new variable "hour"
+accident_data$hora <- sapply(accident_data$hora, extract_hour)
+
+
 # Adjusting the coordinates
 accident_data$coordenada_x_utm <- accident_data$coordenada_x_utm / 1000
 accident_data$coordenada_y_utm <- accident_data$coordenada_y_utm / 1000
@@ -63,6 +77,7 @@ coords <- st_coordinates(accident_data_sf)
 accident_data$longitude <- coords[,1]
 accident_data$latitude <- coords[,2]
 
+accident_data$fecha <- as.Date(accident_data$fecha, format = "%d/%m/%Y")
 #create colors for each district
 num_districts <- 20
 paleqe <- brewer.pal(min(num_districts, 9), "Set1") # 'Set1' has max 9 distinct colors
@@ -71,51 +86,131 @@ names(colors) <- as.character(1:num_districts)
 
 #UI
 
-ui <- fluidPage(
+ui <- fluidPage(theme = shinytheme("sandstone"),
   titlePanel("Madrid Traffic Accident Analysis"),
   tabsetPanel(
     tabPanel("Visualization",
              sidebarLayout(
-               sidebarPanel(
-                 selectInput("yVariable", "Select Y-axis Variable:",
-                             choices = c("Weather" = "estado_meteorológico",
-                                         "Type of Accident" = "tipo_accidente",
-                                         "Age Range" = "simplified_age_range")),
-                 conditionalPanel(
-                   condition = "input.yVariable == 'estado_meteorológico'",
-                   checkboxInput("proportional","Normalize?")
-                 )
-               ),
+                   sidebarPanel(
+                       dateInput("startDate", "Select Initial Date:",  value = as.Date("2023-01-01")),
+                       dateInput("endDate", "Select Last Date:", Sys.Date()),
+                     selectInput("xVariable", "Select X-axis Variable:",
+                                 choices = c("District" = "distrito",
+                                             "Hora" = "hora",
+                                             "Fecha" ="fecha")),
+                     selectInput("yVariable", "Select Y-axis Variable:",
+                                 choices = c("Weather" = "estado_meteorológico",
+                                             "Type of Accident" = "tipo_accidente",
+                                             "Type of Vehicle" = "tipo_vehiculo",
+                                             "Type of Person" = "tipo_persona",
+                                             "Severity" = "lesividad",
+                                             "Age Range" = "simplified_age_range")),
+                         conditionalPanel(
+                           condition = "input.yVariable == 'estado_meteorológico'",
+                           checkboxInput("proportional","Normalize")
+                         )
+                   ),
                mainPanel(
                  plotOutput("districtPlot")
                )
              )
+             
     ),
     
     tabPanel("Map View",
-             leafletOutput("map")
-    ),tabPanel("Data View",
+            fluidRow(
+               column(3,
+                      tabsetPanel(
+                        tabPanel("Group 1",
+                                  dateInput("startDate1", "Select Initial Date:",  value = as.Date("2023-01-01")),
+                                  dateInput("endDate1", "Select Last Date:", Sys.Date()),
+                                  selectInput("filterVariable1", "Select Variable to Filter By",
+                                              choices = c("Type of Accident" = "tipo_accidente",
+                                                          "Type of Vehicle" = "tipo_vehiculo",
+                                                          "Type of Person" = "tipo_persona",
+                                                          "Severity" = "lesividad",
+                                                          "Age Range" = "simplified_age_range"),
+                                              selected = "tipo_accidente"),
+                                  
+                                  uiOutput("checkboxGroup1")
+                        ),
+                        tabPanel("Group 2",
+                                 checkboxInput("enableGroup2", "Enable Group 2", value = FALSE),tags$hr(), 
+                                 conditionalPanel(
+                                   condition = "input.enableGroup2 == true",
+                                   dateInput("startDate2", "Select Initial Date:", value = as.Date("2023-01-01")),
+                                   dateInput("endDate2", "Select Last Date:", Sys.Date()),
+                                   selectInput("filterVariable2", "Select Variable to Filter By",
+                                               choices = c("Type of Accident" = "tipo_accidente",
+                                                           "Type of Vehicle" = "tipo_vehiculo",
+                                                           "Type of Person" = "tipo_persona",
+                                                           "Severity" = "lesividad",
+                                                           "Age Range" = "simplified_age_range"),
+                                               selected = "tipo_accidente"),
+                                   uiOutput("checkboxGroup2")
+                                 )
+                        )
+                      )
+                     ),
+                column(9,
+                       
+                       leafletOutput("map", height = "600px"),
+                       tags$hr(style = "border-top: 2px solid #333;"),  # Styled horizontal line
+                       fluidRow(
+                         column(3,
+                                actionButton("refreshMap", "Refresh Map")),
+                         column(3,checkboxInput("enableStreets", "View Quiet Streets", value = FALSE)),
+                         column(3,checkboxInput("enableCicloStreets", "View Ciclocarriles", value = FALSE))
+                       )
+                )
+            )
+    )
+    ,tabPanel("Data View",
                DTOutput("dataTable")
     )
   )
 )
-server <- function(input, output) {
+
+
+#SERVER 
+
+server <- function(input, output,session) {
+  
+  #output for checkbox selector
+  output$checkboxGroup1 <- renderUI({
+    variable <- input$filterVariable1
+    
+    checkboxGroupInput("features1", paste("Select", variable),
+                       choices = unique(accident_data[[variable]]),
+                       selected = unique(accident_data[[variable]])
+    )
+  })
+  
+  output$checkboxGroup2 <- renderUI({
+    variable <- input$filterVariable2
+    
+    checkboxGroupInput("features2", paste("Select", variable),
+                       choices = unique(accident_data[[variable]]),
+                       selected = unique(accident_data[[variable]])
+    )
+  })
+  
+  
   # Existing server logic for plots and data table
   # Plotting logic
   # Convert the input string to a symbol
   yVariable <- reactive(sym(input$yVariable))
-  
+  xVariable <- reactive(sym(input$xVariable))
   # Group and summarize data based on the selected y-axis variable
   grouped_data <- reactive({
     accident_data %>%
-      group_by(distrito, !!yVariable()) %>%
+      filter(fecha >= input$startDate & fecha <= input$endDate) %>%
+      group_by(!!xVariable(), !!yVariable()) %>%
       summarise(count = n(), .groups = 'drop')
   })
   
   grouped_data_proportional <- reactive({
     proportional <- input$proportional
-    print(proportional)  # Debugging: Check the value of proportional
-    print(grouped_data)
     if (proportional && yVariable() == "estado_meteorológico") {
       result <- grouped_data() %>%
         mutate(count = case_when(
@@ -130,32 +225,95 @@ server <- function(input, output) {
       result <- grouped_data()
     }
     
-    print(head(result))  # Debugging: Check the first few rows of the result
     return(result)
+    
   })
-  
   output$districtPlot <- renderPlot({
     # Extract the data from the reactive expression
     data_to_plot <- grouped_data_proportional()
     
-    # Use the extracted data for plotting
-    ggplot(data_to_plot, aes(x = distrito, y = count, fill = !!yVariable())) +
-      geom_bar(stat = "identity") +
-      theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
-      labs(y = "Number of Accidents", x = "District")
+    if (xVariable()=="fecha"){
+      
+      ggplot(data_to_plot, aes(x = !!xVariable(), y = count, color = !!yVariable())) +
+        geom_line() +
+        stat_summary(aes(group = 1), fun = sum, geom = "line", color = "black") +
+        labs(x = "Fecha",
+             y = "Number of Accidents") +
+        scale_x_date(date_labels = "%Y-%m-%d", date_breaks = "1 month") +
+        theme_minimal()
+      
+    }else{
+      # Use the extracted data for plotting
+      ggplot(data_to_plot, aes(x = !!xVariable(), y = count, fill = !!yVariable())) +
+        geom_bar(stat = "identity") +
+        theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+        labs(y = "Number of Accidents", x = xVariable())
+    }
   })
 
-  
-  output$map <- renderLeaflet({
-    leaflet(data = accident_data) %>%
+  refreshed_map <- eventReactive(input$refreshMap, {
+    filtered_data <- accident_data %>%
+      filter(accident_data[[input$filterVariable1]] %in% input$features1) %>%
+      filter(fecha >= input$startDate1 & fecha <= input$endDate1) 
+    
+    filtered_data2 <- accident_data %>%
+      filter(accident_data[[input$filterVariable2]] %in% input$features2) %>%
+      filter(fecha >= input$startDate2 & fecha <= input$endDate2)
+    
+    
+    
+    map <- leaflet(data = filtered_data) %>%
       addTiles() %>%
       setView(lng = -3.70379, lat = 40.41678, zoom = 12) %>%
       addCircleMarkers(lng = ~longitude, lat = ~latitude, weight = 1,
-                       color = ~colors[as.character(cod_distrito)],
-                       fillColor = ~colors[as.character(cod_distrito)],
+                       color = "blue",
+                       fillColor = "blue",
                        fillOpacity = 0.5, radius = 5,
-                       clusterOptions = markerClusterOptions())
+                       clusterOptions = markerClusterOptions(
+                         spiderfyOnMaxZoom = FALSE,
+                         disableClusteringAtZoom = 15
+                       ))
+    if(input$enableStreets==TRUE){
+      for (i in 1:nrow(street_data)) {
+        map <- map %>%
+          addPolylines(
+            lng = c(street_data$lon1[i], street_data$lon2[i]),
+            lat = c(street_data$lat1[i], street_data$lat2[i]),
+            color = "green"
+          )
+      }
+    }
+    if(input$enableCicloStreets==TRUE){
+      for (i in 1:nrow(ciclostreet_data)) {
+        map <- map %>%
+          addPolylines(
+            lng = c(ciclostreet_data$lon1[i], ciclostreet_data$lon2[i]),
+            lat = c(ciclostreet_data$lat1[i], ciclostreet_data$lat2[i]),
+            color = "cyan"
+          )
+      }
+    }
+    if(input$enableGroup2==TRUE){
+      map <- map %>%
+      addCircleMarkers(
+        data = filtered_data2,
+        lng = ~longitude, lat = ~latitude,
+        weight = 1, color = "red", fillColor = "red",
+        fillOpacity = 0.5, radius = 5,
+        clusterOptions = markerClusterOptions(
+          spiderfyOnMaxZoom = FALSE,
+          disableClusteringAtZoom = 15
+        ))
+    }
+    
+    map
   })
+  
+  # Render the map
+  output$map <- renderLeaflet({
+    refreshed_map()
+  })
+  
   
   # Data table logic
   output$dataTable <- renderDT({
